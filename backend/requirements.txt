@@ -1,8 +1,8 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
 fastapi
 uvicorn
 python-multipart
 pillow
---index-url https://download.pytorch.org/whl/cpu
 torch
 torchvision
 timm
