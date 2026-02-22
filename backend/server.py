@@ -1,30 +1,44 @@
-from fastapi import FastAPI, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware
-from PIL import Image
+import os
 import io
 import json
 import torch
-import torch.nn.functional as F
 import timm
 import torchvision.transforms as T
+import torch.nn.functional as F
+from fastapi import FastAPI, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
+from PIL import Image
 
 # ----------------------------
-# App setup
+# 1. App setup & CORS
 # ----------------------------
 app = FastAPI()
 
+# This allows your Next.js website to talk to this Python AI
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # allow Next.js + phone
+    allow_origins=["*"],  
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # ----------------------------
-# Load class names
+# 2. Path Handling (Crucial for Railway)
 # ----------------------------
-with open("class_names.json", "r") as f:
+# This finds the absolute path of the folder this script is in
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_NAME = "isic_ham_b2_best.pth"
+MODEL_PATH = os.path.join(BASE_DIR, MODEL_NAME)
+
+# Force CPU mode for Railway (Free tier has no GPU)
+device = torch.device("cpu")
+
+# ----------------------------
+# 3. Load Class Names
+# ----------------------------
+CLASS_NAMES_PATH = os.path.join(BASE_DIR, "class_names.json")
+with open(CLASS_NAMES_PATH, "r") as f:
     class_names = json.load(f)
 
 FULL_CLASS_NAMES = {
@@ -37,27 +51,29 @@ FULL_CLASS_NAMES = {
     "vasc": "Vascular lesion"
 }
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
+# ----------------------------
+# 4. Load Model
+# ----------------------------
+print(f"--- Loading model from: {MODEL_PATH} ---")
 
-# ----------------------------
-# Load model
-# ----------------------------
 model = timm.create_model(
     "efficientnet_b2",
     pretrained=False,
     num_classes=len(class_names)
 )
 
-state = torch.load("isic_ham_b2_best.pth", map_location=device)
+# The 'map_location=device' is what stops the "No CUDA found" crash
+state = torch.load(MODEL_PATH, map_location=device)
 model.load_state_dict(state)
 model.to(device)
 model.eval()
 
+print("--- AI Model Loaded Successfully! ---")
+
 # ----------------------------
-# Preprocess
+# 5. Image Preprocessing
 # ----------------------------
 IMG_SIZE = 260
-
 transform = T.Compose([
     T.Resize((IMG_SIZE, IMG_SIZE)),
     T.ToTensor(),
@@ -68,20 +84,23 @@ transform = T.Compose([
 ])
 
 # ----------------------------
-# Predict endpoint
+# 6. Predict Endpoint
 # ----------------------------
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
+    # Read and open image
     img_bytes = await file.read()
     image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
 
+    # Transform image for AI
     x = transform(image).unsqueeze(0).to(device)
 
+    # Run inference
     with torch.no_grad():
         logits = model(x)
         probs = F.softmax(logits, dim=1)[0].cpu().numpy()
 
-    # Top 3
+    # Get Top 3 Results
     top3_idx = probs.argsort()[-3:][::-1]
 
     results = []
@@ -97,3 +116,7 @@ async def predict(file: UploadFile = File(...)):
         })
 
     return {"results": results}
+
+@app.get("/")
+def health_check():
+    return {"status": "AI is online and healthy"}
